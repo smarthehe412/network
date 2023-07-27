@@ -1,0 +1,70 @@
+#!/bin/bash
+
+set -e
+
+IFS=''
+NETNS_PREFIX="/tmp/netns"
+NETNS_SRC_BASE="$(cd "$(dirname "$0")/.."; pwd)"
+
+mkdir -p $NETNS_PREFIX
+mount -t tmpfs tmpfs $NETNS_PREFIX
+mkdir $NETNS_PREFIX/ns
+touch $NETNS_PREFIX/ns/default
+mount --bind /proc/self/ns/net $NETNS_PREFIX/ns/default
+ip link set lo up
+
+touch $NETNS_PREFIX/profile
+chmod +x $NETNS_PREFIX/profile
+cp /etc/profile $NETNS_PREFIX/profile
+echo >> $NETNS_PREFIX/profile
+printf '. %q\n' "$NETNS_PREFIX/env" >> $NETNS_PREFIX/profile
+mount --bind $NETNS_PREFIX/profile /etc/profile
+
+printf 'NETNS_SRC_BASE=%q\n' "$NETNS_SRC_BASE" >> $NETNS_PREFIX/env
+printf 'NETNS_PREFIX=%q\n' "$NETNS_PREFIX" >> $NETNS_PREFIX/env
+cat "$NETNS_SRC_BASE/lib/env" >> $NETNS_PREFIX/env
+
+echo '127.0.0.1 localhost' >> $NETNS_PREFIX/hosts
+echo '::1 localhost' >> $NETNS_PREFIX/hosts
+mount --bind $NETNS_PREFIX/hosts /etc/hosts
+
+function auto_initns () {
+  file="$1"
+  if [ -e "$file" ]; then
+    tmp="$(mktemp -p $NETNS_PREFIX)"
+    cp "$file" "$tmp"
+    chmod +x "$tmp"
+    echo >> "$tmp"
+    echo "initns" >> "$tmp"
+    mount --bind "$tmp" "$file"
+  fi
+}
+auto_initns ~/.bashrc
+auto_initns ~/.zshrc
+
+mkdir $NETNS_PREFIX/bin
+cp "$NETNS_SRC_BASE"/lib/{mkns.c,nsexec.c,testdrv.c,ipserv} $NETNS_PREFIX/bin
+chmod +x $NETNS_PREFIX/bin/ipserv
+make -s $NETNS_PREFIX/bin/{mkns,nsexec,testdrv}
+
+$NETNS_PREFIX/bin/ipserv &
+
+SHELL=${SHELL:=/bin/bash}
+
+function cleanup () {
+  pgrep --ns $$ --nslist mnt | grep -v $$ | xargs kill -9 > /dev/null 2>&1
+  exit $ret
+}
+
+set +e
+
+if [ ! -z "$1" ]; then
+  (echo "set -e"; echo ". \"$NETNS_PREFIX/env\""; cat "$1") | bash
+  ret=$?
+  if [ $ret != 0 ]; then cleanup; fi
+fi
+
+$SHELL -l
+ret=$?
+
+cleanup

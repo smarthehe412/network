@@ -1,0 +1,5 @@
+tests/*
+topo/*
+nsstart
+nstest
+start-proxy
